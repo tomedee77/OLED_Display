@@ -7,10 +7,11 @@ from luma.oled.device import sh1106
 from luma.core.render import canvas
 from PIL import ImageFont
 
-# --- Setup OLED ---
+# --- OLED setup ---
 serial = i2c(port=1, address=0x3C)
 device = sh1106(serial)
 
+# --- Fonts ---
 font_small = ImageFont.load_default()
 font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
 
@@ -19,76 +20,56 @@ BUTTON_PIN = 17
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# --- Dummy test values ---
-test_data = [
-    ("AFR", "14.7"),
-    ("TPS", "0%"),
-    ("CLT", "20°C"),
-    ("IAT", "22°C"),
-    ("RPM", "850"),
-]
-page_index = 0
+# --- Labels to show ---
+FIELDS = ["RPM", "TPS", "AFR", "CLT", "IAT"]
+test_values = {
+    "RPM": [900, 1500, 2500, 3000],
+    "TPS": [0, 25, 50, 75, 100],
+    "AFR": [14.7, 12.5, 13.2],
+    "CLT": [20, 80, 90],
+    "IAT": [18, 30, 40]
+}
 
-# --- Helper: draw text centered ---
-def draw_screen(label, value):
-    with canvas(device) as draw:
-        # Label (top, small, centered)
-        w, h = draw.textsize(label, font=font_small)
-        draw.text(((device.width - w) // 2, 0), label, font=font_small, fill=255)
-
-        # Value (bottom, large, centered)
-        w, h = draw.textsize(value, font=font_large)
-        draw.text(((device.width - w) // 2, (device.height - h) // 2), value, font=font_large, fill=255)
-
-# --- Detect latest log file ---
+# --- Helper to find latest log file ---
 def get_latest_log():
-    logs = glob.glob("/home/pi/TunerStudioProjects/**/datalogs/*.ml*", recursive=True)
-    if logs:
-        return max(logs, key=os.path.getctime)
-    return None
+    files = glob.glob("/home/pi/TunerStudioProjects/*/datalogs/*.ml*")
+    if not files:
+        return None
+    return max(files, key=os.path.getctime)
 
-# --- Read ECU log line ---
-def read_log_line(log_file):
-    try:
-        with open(log_file, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            while True:
-                line = f.readline().decode(errors="ignore").strip()
-                if not line:
-                    time.sleep(0.2)
-                    continue
-                yield line.split(",")
-    except FileNotFoundError:
-        return
+# --- Display helper ---
+def show(label, value, test_mode=False):
+    with canvas(device) as draw:
+        top = f"{label} {'[T]' if test_mode else ''}"
+        draw.text((64, 0), top, font=font_small, anchor="mm", align="center")
+        draw.text((64, 20), str(value), font=font_large, anchor="mm", align="center")
 
 # --- Main loop ---
-def main():
-    global page_index
-    log_file = get_latest_log()
+page = 0
+test_mode = False
+test_index = {f: 0 for f in FIELDS}
 
-    if not log_file:
-        print("No log file found, starting in TEST MODE")
+while True:
+    # Button polling
+    if GPIO.input(BUTTON_PIN) == GPIO.LOW:
+        page = (page + 1) % len(FIELDS)
+        time.sleep(0.3)  # debounce
+
+    # Try to get ECU/log file
+    logfile = get_latest_log()
+    if logfile and os.path.getsize(logfile) > 0:
+        test_mode = False
+        # For now just show "Live" placeholder until parsing added
+        label = FIELDS[page]
+        value = "Live..."
     else:
-        print(f"Reading from log file: {log_file}")
+        test_mode = True
+        label = FIELDS[page]
+        vals = test_values[label]
+        value = vals[test_index[label]]
+        test_index[label] = (test_index[label] + 1) % len(vals)
 
-    data_gen = read_log_line(log_file) if log_file else None
+    # Update OLED
+    show(label, value, test_mode)
 
-    while True:
-        button_state = GPIO.input(BUTTON_PIN)
-        if button_state == GPIO.LOW:
-            page_index = (page_index + 1) % len(test_data)
-            time.sleep(0.3)  # debounce
-
-        if log_file and data_gen:
-            # Here you’d parse actual ECU values if log format known
-            label, value = test_data[page_index]  # placeholder until format sorted
-        else:
-            label, value = test_data[page_index]
-
-        draw_screen(label, value)
-        time.sleep(0.2)
-
-try:
-    main()
-except KeyboardInterrupt:
-    GPIO.cleanup()
+    time.sleep(1)
