@@ -30,19 +30,25 @@ test_values = {
     "IAT": [18, 30, 40]
 }
 
-# --- Helper to find latest log file ---
-def get_latest_log():
-    files = glob.glob("/home/pi/TunerStudioProjects/*/datalogs/*.ml*")
-    if not files:
-        return None
-    return max(files, key=os.path.getctime)
-
-# --- Display helper ---
+# --- Helper: draw centered ---
 def show(label, value, test_mode=False):
     with canvas(device) as draw:
-        top = f"{label} {'[T]' if test_mode else ''}"
-        draw.text((64, 0), top, font=font_small, anchor="mm", align="center")
-        draw.text((64, 20), str(value), font=font_large, anchor="mm", align="center")
+        # top line centered
+        w, h = draw.textsize(label, font=font_small)
+        x = (device.width - w) // 2
+        draw.text((x, 0), label + (" [T]" if test_mode else ""), font=font_small, fill=255)
+
+        # bottom line centered
+        val_str = str(value)
+        w, h = draw.textsize(val_str, font=font_large)
+        x = (device.width - w) // 2
+        y = (device.height - h) // 2
+        draw.text((x, y), val_str, font=font_large, fill=255)
+
+# --- Helper: latest log ---
+def get_latest_log():
+    files = glob.glob("/home/pi/TunerStudioProjects/*/datalogs/*.ml*")
+    return max(files, key=os.path.getctime) if files else None
 
 # --- Main loop ---
 page = 0
@@ -55,11 +61,10 @@ while True:
         page = (page + 1) % len(FIELDS)
         time.sleep(0.3)  # debounce
 
-    # Try to get ECU/log file
+    # Check for log file
     logfile = get_latest_log()
     if logfile and os.path.getsize(logfile) > 0:
         test_mode = False
-        # For now just show "Live" placeholder until parsing added
         label = FIELDS[page]
         value = "Live..."
     else:
@@ -72,4 +77,4 @@ while True:
     # Update OLED
     show(label, value, test_mode)
 
-    time.sleep(1)
+    time.sleep(0.5)
