@@ -18,6 +18,14 @@ DEBOUNCE = 0.2   # button debounce time in seconds
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
+# Fonts
+font_small = ImageFont.load_default()
+# Replace with a .ttf file if desired; adjust size as needed
+try:
+    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+except:
+    font_large = ImageFont.load_default()
+
 # ----------------------------
 # SETUP
 # ----------------------------
@@ -26,9 +34,6 @@ GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 serial = i2c(port=1, address=0x3C)
 device = sh1106(serial)
-
-font_small = ImageFont.load_default()
-font_large = ImageFont.load_default()  # can replace with truetype if desired
 
 current_index = 0
 test_mode = True
@@ -50,11 +55,15 @@ def draw_oled(label, value, blink_indicator=False):
     global device, blink
     with canvas(device) as draw:
         # Top line: label
-        w, h = font_small.getsize(label)
+        bbox = font_small.getbbox(label)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.text(((OLED_WIDTH - w) / 2, 0), label, font=font_small, fill=255)
+
         # Bottom line: value
-        w, h = font_large.getsize(value)
+        bbox = font_large.getbbox(value)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.text(((OLED_WIDTH - w) / 2, 16), value, font=font_large, fill=255)
+
         # Optional blink T in top-left
         if blink_indicator and blink:
             draw.text((0, 0), "T", font=font_small, fill=255)
@@ -76,7 +85,7 @@ try:
             blink = not blink
             blink_timer = time.time()
 
-        # Display
+        # Display current label/value
         label = TEST_LABELS[current_index]
         value = TEST_VALUES[current_index]
         draw_oled(label, value, blink_indicator=test_mode)
