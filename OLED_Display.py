@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import time
-import os
-import glob
+import RPi.GPIO as GPIO
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
 from luma.core.render import canvas
@@ -12,8 +11,8 @@ from PIL import ImageFont
 # ----------------------------
 OLED_WIDTH = 128
 OLED_HEIGHT = 32
-BUTTON_PIN = 17  # GPIO pin for button
-DEBOUNCE = 0.2   # button debounce time (seconds)
+BUTTON_PIN = 17  # GPIO pin for momentary button
+DEBOUNCE = 0.2   # button debounce time in seconds
 
 # Labels and test values
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
@@ -22,7 +21,6 @@ TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 # ----------------------------
 # SETUP
 # ----------------------------
-import RPi.GPIO as GPIO
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
@@ -49,13 +47,13 @@ def get_next_index():
     return current_index
 
 def draw_oled(label, value, blink_indicator=False):
-    global device
+    global device, blink
     with canvas(device) as draw:
         # Top line: label
-        w, h = draw.textsize(label, font=font_small)
+        w, h = font_small.getsize(label)
         draw.text(((OLED_WIDTH - w) / 2, 0), label, font=font_small, fill=255)
         # Bottom line: value
-        w, h = draw.textsize(value, font=font_large)
+        w, h = font_large.getsize(value)
         draw.text(((OLED_WIDTH - w) / 2, 16), value, font=font_large, fill=255)
         # Optional blink T in top-left
         if blink_indicator and blink:
