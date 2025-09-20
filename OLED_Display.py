@@ -1,104 +1,142 @@
-import time
-import csv
+#!/usr/bin/env python3
+import os
 import glob
-import threading
+import time
+import RPi.GPIO as GPIO
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
 from luma.core.render import canvas
 from PIL import ImageFont
-import RPi.GPIO as GPIO
-import os
+
+# --- Paths ---
+LOG_DIR = "/home/pi/TunerStudioProjects/YourProject/datalogs"
 
 # --- OLED setup ---
 serial = i2c(port=1, address=0x3C)
 device = sh1106(serial)
 
-small_font = ImageFont.load_default()
-large_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+# --- Fonts ---
+font_small = ImageFont.load_default()
+font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
 
 # --- Button setup ---
 BUTTON_PIN = 17
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# --- Log directory ---
-LOG_DIR = "/home/pi/TunerStudioProjects/MyProject/Logs/"
-FIELDS = []        # Fields from CSV header
-current_index = 0  # Which value to display
-log_file = None    # Will be set to newest .msl file
+# --- Values to show ---
+labels = ["RPM", "TPS", "AFR", "CLT", "IAT"]
+index = 0
+test_mode = False
+last_press_time = 0
 
-# --- Test mode ---
-TEST_MODE = False
-test_values = {}
+# --- Globals for log parsing ---
+log_header = []
+log_columns = {}
 
-# --- Live log data storage ---
-log_data = {}
-
-# --- Button press to cycle fields ---
-def button_callback(channel):
-    global current_index
-    current_index = (current_index + 1) % len(FIELDS)
-
-GPIO.add_event_detect(BUTTON_PIN, GPIO.FALLING, callback=button_callback, bouncetime=200)
-
-# --- Find latest .msl log file ---
-def find_latest_log():
+def get_latest_log():
+    """Return path to most recent .msl file."""
     files = glob.glob(os.path.join(LOG_DIR, "*.msl"))
     if not files:
         return None
     return max(files, key=os.path.getmtime)
 
-# --- Tail CSV log ---
-def tail_log():
-    global log_data, FIELDS, test_values
-    while True:
-        lf = find_latest_log()
-        if lf != log_file:
-            # New file found
-            nonlocal log_file
-            log_file = lf
-            try:
-                f = open(log_file)
-                reader = csv.DictReader(f)
-                FIELDS = reader.fieldnames
-                test_values = {field: 0 for field in FIELDS}  # default test
-                print(f"Tracking log: {log_file}")
-                while True:
-                    line = f.readline()
-                    if not line:
-                        time.sleep(0.1)
-                        continue
-                    row = dict(zip(FIELDS, line.strip().split(',')))
-                    log_data = row
-            except Exception as e:
-                print(f"Error opening log: {e}")
-                time.sleep(1)
-        else:
-            time.sleep(1)
+def parse_header(filepath):
+    """Read the header line to map column names to indices."""
+    global log_header, log_columns
+    try:
+        with open(filepath, "r", errors="ignore") as f:
+            for line in f:
+                if line.startswith("Time") or line.startswith("ts"):
+                    log_header = line.strip().split("\t")
+                    log_columns = {name: i for i, name in enumerate(log_header)}
+                    break
+    except Exception as e:
+        print("Header parse error:", e)
 
-# --- Start tailing in background ---
-threading.Thread(target=tail_log, daemon=True).start()
+def get_live_values():
+    """Get latest values from the most recent log."""
+    try:
+        latest = get_latest_log()
+        if not latest:
+            return {lbl: "N/A" for lbl in labels}
 
-# --- Display loop ---
+        if not log_header:  # first time only
+            parse_header(latest)
+
+        with open(latest, "rb") as f:
+            f.seek(-800, os.SEEK_END)
+            lines = f.readlines()
+            last_line = lines[-1].decode(errors="ignore").strip()
+
+        parts = last_line.split("\t")
+
+        values = {}
+        for lbl in labels:
+            if lbl in log_columns:
+                values[lbl] = parts[log_columns[lbl]]
+            else:
+                values[lbl] = "N/A"
+
+        return values
+    except Exception:
+        return {lbl: "N/A" for lbl in labels}
+
+def draw_display(label, value, blink=False):
+    """Draw text on OLED."""
+    with canvas(device) as draw:
+        # Top line label
+        w, h = draw.textsize(label, font=font_small)
+        draw.text(((device.width - w) // 2, 0), label, font=font_small, fill=255)
+
+        # Bottom value
+        w, h = draw.textsize(value, font=font_large)
+        draw.text(((device.width - w) // 2, (device.height - h) // 2 + 6), value, font=font_large, fill=255)
+
+        # Blinking T in test mode
+        if blink:
+            draw.text((device.width - 10, 0), "T", font=font_small, fill=255)
+
+def get_button():
+    """Poll button with debounce."""
+    global last_press_time
+    if GPIO.input(BUTTON_PIN) == GPIO.LOW:
+        now = time.time()
+        if now - last_press_time > 0.3:  # debounce 300ms
+            last_press_time = now
+            return True
+    return False
+
+# --- Main loop ---
+blink_state = False
+values = {}
+
 try:
     while True:
-        if not FIELDS:
-            time.sleep(0.2)
-            continue
+        if get_button():
+            # Short press cycles values
+            index = (index + 1) % len(labels)
 
-        field = FIELDS[current_index]
-        value = test_values[field] if TEST_MODE else log_data.get(field, "N/A")
+        if test_mode:
+            # Fake values for debugging
+            values = {
+                "RPM": str(int(time.time()) % 7000),
+                "TPS": str((int(time.time()) * 3) % 100),
+                "AFR": "14.7",
+                "CLT": "90",
+                "IAT": "25"
+            }
+        else:
+            values = get_live_values()
 
-        with canvas(device) as draw:
-            # Top line: label
-            w, h = draw.textsize(field, font=small_font)
-            draw.text(((device.width - w)//2, 0), field, font=small_font, fill=255)
-            # Bottom line: value
-            val_str = str(value)
-            w, h = draw.textsize(val_str, font=large_font)
-            draw.text(((device.width - w)//2, device.height//2), val_str, font=large_font, fill=255)
+        blink_state = not blink_state if test_mode else False
 
-        time.sleep(0.2)
+        label = labels[index]
+        value = values.get(label, "N/A")
+
+        draw_display(label, value, blink=blink_state)
+
+        time.sleep(0.5)
 
 except KeyboardInterrupt:
     GPIO.cleanup()
