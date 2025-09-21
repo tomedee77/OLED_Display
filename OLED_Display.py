@@ -24,11 +24,11 @@ TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
 # Fonts
-font_small = ImageFont.load_default()
+font_small = ImageFont.load_default(20)
 try:
-    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
 except:
-    font_large = ImageFont.load_default()
+    font_large = ImageFont.load_default(40)
 
 # ----------------------------
 # SETUP
