@@ -31,6 +31,16 @@ except:
     font_large = ImageFont.load_default()
 
 # ----------------------------
+# CLEAR OLD LOGS ON STARTUP
+# ----------------------------
+for f in glob.glob(os.path.join(DATA_LOG_DIR, "*.ml*")):
+    try:
+        os.remove(f)
+        print(f"Deleted old log: {f}")
+    except Exception as e:
+        print(f"Failed to delete {f}: {e}")
+
+# ----------------------------
 # SETUP
 # ----------------------------
 GPIO.setmode(GPIO.BCM)
