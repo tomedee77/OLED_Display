@@ -18,17 +18,17 @@ OLED_WIDTH = 128
 OLED_HEIGHT = 32
 BUTTON_PIN = 17       # GPIO pin for momentary button
 DEBOUNCE = 0.2        # debounce time
-LONG_PRESS = 2.0      # long press to enter/exit test mode
+LONG_PRESS = 2        # seconds to enter test mode
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 GPS_PORT = "/dev/gps0"
 GPS_BAUD = 9600
 
 # Labels we want to display (must match log columns!)
-LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT"]
+LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT", "GPS"]
 
 # Test labels/values for bench test
-TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
-TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
+TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT", "GPS"]
+TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C", "0.0"]
 
 # Fonts
 font_small = ImageFont.load_default(15)
@@ -45,18 +45,18 @@ except:
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-serial_i2c = i2c(port=1, address=0x3C)
-device = sh1106(serial_i2c)
+serial_oled = i2c(port=1, address=0x3C)
+device = sh1106(serial_oled)
 
 current_index = 0
-test_mode = False        # Boot to live mode
+test_mode = False
+button_down_time = None
 last_press_time = 0
-button_press_start = None
 blink = True
 blink_timer = time.time()
 latest_log_file = None
 
-# GPS serial
+# Setup GPS
 try:
     gps_serial = serial.Serial(GPS_PORT, GPS_BAUD, timeout=1)
 except Exception:
@@ -91,17 +91,23 @@ def get_next_index(labels):
 def draw_oled(label, value, blink_indicator=False):
     global device, blink
     with canvas(device) as draw:
-        # Label (top)
-        bbox = font_small.getbbox(label)
-        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(((OLED_WIDTH - w) / 2, 0), label, font=font_small, fill=255)
+        if label == "GPS":
+            # Only show value, centered vertically
+            bbox = font_large.getbbox(value)
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(((OLED_WIDTH - w)/2, (OLED_HEIGHT - h)/2), value, font=font_large, fill=255)
+        else:
+            # Label (top)
+            bbox = font_small.getbbox(label)
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(((OLED_WIDTH - w)/2, 0), label, font=font_small, fill=255)
 
-        # Value (bottom, with spacing)
-        bbox = font_large.getbbox(value)
-        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(((OLED_WIDTH - w) / 2, 16), value, font=font_large, fill=255)
+            # Value (bottom)
+            bbox = font_large.getbbox(value)
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(((OLED_WIDTH - w)/2, 16), value, font=font_large, fill=255)
 
-        # Blinking "T" if test mode
+        # Blinking "T" in test mode
         if blink_indicator and blink:
             draw.text((0, 0), "T", font=font_small, fill=255)
 
@@ -122,18 +128,20 @@ def read_latest_value(label, file_path):
         return "N/A"
 
 def read_gps_speed():
-    """Return GPS speed in MPH"""
+    """Read GPS speed in MPH"""
     if not gps_serial:
-        return "N/A"
+        return "0.0"
     try:
-        line = gps_serial.readline().decode("ascii", errors="ignore")
-        msg = pynmea2.parse(line)
-        if hasattr(msg, "spd_over_grnd"):
-            mph = msg.spd_over_grnd * 1.15078
-            return f"{int(mph)} mph"
-        return "N/A"
-    except:
-        return "N/A"
+        line = gps_serial.readline().decode('ascii', errors='replace')
+        if line.startswith('$GPRMC'):
+            msg = pynmea2.parse(line)
+            if msg.spd_over_grnd:
+                # Convert knots to MPH
+                mph = float(msg.spd_over_grnd) * 1.15078
+                return f"{mph:.1f}"
+    except Exception:
+        pass
+    return "0.0"
 
 # ----------------------------
 # MAIN
@@ -142,45 +150,44 @@ cleanup_old_logs()
 
 try:
     while True:
-        # Update blink
+        # Blink toggle
         if time.time() - blink_timer > 0.5:
             blink = not blink
             blink_timer = time.time()
 
-        # Button pressed handling
-        if GPIO.input(BUTTON_PIN) == 0:  # pressed
-            if button_press_start is None:
-                button_press_start = time.time()
-            elif time.time() - button_press_start >= LONG_PRESS:
-                test_mode = not test_mode  # toggle test/live mode
-                button_press_start = None
+        # Button handling (polling)
+        button_state = GPIO.input(BUTTON_PIN)
+        now = time.time()
+        if button_state == 0:
+            if button_down_time is None:
+                button_down_time = now
+            elif now - button_down_time >= LONG_PRESS:
+                test_mode = True
         else:
-            button_press_start = None
-            now = time.time()
-            if now - last_press_time > DEBOUNCE:
-                get_next_index(TEST_LABELS if test_mode else LIVE_LABELS)
-                last_press_time = now
+            if button_down_time:
+                # Short press
+                if now - last_press_time > DEBOUNCE and now - button_down_time < LONG_PRESS:
+                    get_next_index(TEST_LABELS if test_mode else LIVE_LABELS)
+                    last_press_time = now
+                button_down_time = None
 
-        # Update latest log file
+        # Check for latest log if in live mode
         if not test_mode:
             candidate = find_latest_log()
             if candidate and candidate != latest_log_file:
                 latest_log_file = candidate
                 current_index = 0
 
-        # Display values
-        if test_mode:
-            label = TEST_LABELS[current_index]
+        # Determine what to display
+        label = TEST_LABELS[current_index] if test_mode else LIVE_LABELS[current_index]
+        if label == "GPS":
+            value = read_gps_speed()
+        elif test_mode:
             value = TEST_VALUES[current_index]
-            draw_oled(label, value, blink_indicator=True)
         else:
-            # Cycle through live labels
-            label = LIVE_LABELS[current_index]
-            value = read_latest_value(label, latest_log_file) if latest_log_file else "N/A"
-            draw_oled(label, value, blink_indicator=False)
-            # Show GPS speed as a separate line if needed
-            gps_value = read_gps_speed()
-            draw_oled("GPS", gps_value, blink_indicator=False)
+            value = read_latest_value(label, latest_log_file)
+
+        draw_oled(label, value, blink_indicator=test_mode)
 
         time.sleep(0.1)
 
