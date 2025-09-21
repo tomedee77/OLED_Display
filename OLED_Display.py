@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+import time
 import os
 import glob
-import time
+from datetime import datetime
 import RPi.GPIO as GPIO
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
@@ -13,22 +14,25 @@ from PIL import ImageFont
 # ----------------------------
 OLED_WIDTH = 128
 OLED_HEIGHT = 32
-BUTTON_PIN = 17  # GPIO pin for momentary button
-DEBOUNCE = 0.2   # button debounce time in seconds
+BUTTON_PIN = 17       # GPIO pin for momentary button
+DEBOUNCE = 0.2        # debounce time
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
-LOG_COLUMNS = ["MAP", "AFR", "CLT", "MAT"]  # columns to read from log
-NO_DATA_TIMEOUT = 5  # seconds
 
-# Labels and test values
+# Labels we want to display (must match log columns!)
+LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT"]
+
+# Test labels/values for bench test
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
 # Fonts
-font_small = ImageFont.load_default(20)
+font_small = ImageFont.load_default()
 try:
-    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+    font_large = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16
+    )
 except:
-    font_large = ImageFont.load_default(40)
+    font_large = ImageFont.load_default()
 
 # ----------------------------
 # SETUP
@@ -44,148 +48,105 @@ test_mode = True
 last_press_time = 0
 blink = True
 blink_timer = time.time()
-last_data_time = 0
+latest_log_file = None
 
 # ----------------------------
-# LOG FILE HANDLING
+# HELPER FUNCTIONS
 # ----------------------------
-log_fh = None
-log_headers = []
-
-def clear_old_logs():
-    files = glob.glob(os.path.join(LOG_DIR, "*"))
-    for f in files:
+def cleanup_old_logs():
+    """Delete logs older than today"""
+    today = datetime.now().date()
+    for f in glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg")):
         try:
-            os.remove(f)
-        except:
-            pass
+            mtime = datetime.fromtimestamp(os.path.getmtime(f)).date()
+            if mtime < today:
+                os.remove(f)
+        except Exception as e:
+            print(f"Failed to remove {f}: {e}")
 
-def get_latest_log_file():
-    files = sorted(
-        glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg")),
-        key=os.path.getmtime, reverse=True
-    )
-    return files[0] if files else None
-
-def open_log_tail():
-    global log_fh, log_headers
-    latest = get_latest_log_file()
-    if not latest:
-        return False
-    try:
-        log_fh = open(latest, "r")
-        lines = log_fh.readlines()
-        if lines:
-            log_headers = [h.strip() for h in lines[0].strip().split(",")]
-        log_fh.seek(0, os.SEEK_END)
-        return True
-    except:
-        log_fh = None
-        return False
-
-def read_next_log_line():
-    global log_fh, log_headers
-    if not log_fh:
-        if not open_log_tail():
-            return None
-    line = log_fh.readline()
-    if not line:
+def find_latest_log():
+    """Find the most recent log file"""
+    files = glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg"))
+    if not files:
         return None
-    parts = line.strip().split(",")
-    data = {}
-    for col in LOG_COLUMNS:
-        if col in log_headers:
-            idx = log_headers.index(col)
-            data[col] = parts[idx] if idx < len(parts) else "N/A"
-        else:
-            data[col] = "N/A"
-    return data
+    return max(files, key=os.path.getmtime)
 
-# ----------------------------
-# OLED DISPLAY
-# ----------------------------
-LINE_SPACING = 2
+def get_next_index(labels):
+    global current_index
+    current_index = (current_index + 1) % len(labels)
+    return current_index
 
-def draw_oled(label, value, indicator=False, ts_running=False, no_data=False):
+def draw_oled(label, value, blink_indicator=False):
     global device, blink
     with canvas(device) as draw:
-        if no_data:
-            # Centered NO DATA message
-            bbox = font_large.getbbox("NO DATA")
-            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            draw.text(((OLED_WIDTH - w) / 2, (OLED_HEIGHT - h) / 2),
-                      "NO DATA", font=font_large, fill=255)
-            return
-
-        # Top line: label
+        # Label (top)
         bbox = font_small.getbbox(label)
         w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.text(((OLED_WIDTH - w) / 2, 0), label, font=font_small, fill=255)
 
-        # Bottom line: value
-        bbox_val = font_large.getbbox(value)
-        w_val, h_val = bbox_val[2] - bbox_val[0], bbox_val[3] - bbox_val[1]
-        y_pos = h + LINE_SPACING
-        draw.text(((OLED_WIDTH - w_val) / 2, y_pos), value, font=font_large, fill=255)
+        # Value (bottom, with spacing)
+        bbox = font_large.getbbox(value)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(((OLED_WIDTH - w) / 2, 16), value, font=font_large, fill=255)
 
-        # Test mode blink indicator (T)
-        if indicator and blink:
+        # Blinking "T" if test mode
+        if blink_indicator and blink:
             draw.text((0, 0), "T", font=font_small, fill=255)
 
-        # Live mode TS indicator (top right)
-        if ts_running:
-            draw.text((OLED_WIDTH - 16, 0), "TS", font=font_small, fill=255)
-
-# ----------------------------
-# BUTTON HANDLING
-# ----------------------------
-def get_next_index():
-    global current_index
-    current_index += 1
-    if current_index >= len(TEST_LABELS):
-        current_index = 0
-    return current_index
+def read_latest_value(label, file_path):
+    """Read last logged value for given label from the log file"""
+    try:
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+            if len(lines) < 2:
+                return "N/A"
+            header = lines[0].strip().split("\t")
+            if label not in header:
+                return "N/A"
+            idx = header.index(label)
+            last = lines[-1].strip().split("\t")
+            return last[idx]
+    except Exception:
+        return "N/A"
 
 # ----------------------------
 # MAIN
 # ----------------------------
-clear_old_logs()
+cleanup_old_logs()
 
 try:
     while True:
-        # Button polling
-        if GPIO.input(BUTTON_PIN) == 0:  # pressed
-            now = time.time()
-            if now - last_press_time > DEBOUNCE:
-                get_next_index()
-                last_press_time = now
-
-        # Toggle blink every 0.5 sec
+        # Update blink
         if time.time() - blink_timer > 0.5:
             blink = not blink
             blink_timer = time.time()
 
-        # Read live data
-        live_data = read_next_log_line()
-        if live_data:
-            test_mode = False
-            last_data_time = time.time()
-            keys = list(live_data.keys())
-            key = keys[current_index % len(keys)]
-            label = key
-            value = str(live_data[key])
-            draw_oled(label, value, indicator=False, ts_running=True, no_data=False)
-        else:
-            # If TS is running but no data for too long -> NO DATA warning
-            if not test_mode and (time.time() - last_data_time > NO_DATA_TIMEOUT):
-                draw_oled("", "", no_data=True)
-            else:
-                test_mode = True
-                label = TEST_LABELS[current_index]
-                value = TEST_VALUES[current_index]
-                draw_oled(label, value, indicator=True, ts_running=False, no_data=False)
+        # Button pressed?
+        if GPIO.input(BUTTON_PIN) == 0:
+            now = time.time()
+            if now - last_press_time > DEBOUNCE:
+                get_next_index(TEST_LABELS if test_mode else LIVE_LABELS)
+                last_press_time = now
 
-        time.sleep(0.05)
+        # If in test mode, keep checking for a new log file
+        if test_mode:
+            candidate = find_latest_log()
+            if candidate and candidate != latest_log_file:
+                latest_log_file = candidate
+                test_mode = False  # switch to live
+                current_index = 0
+
+        # Display values
+        if test_mode:
+            label = TEST_LABELS[current_index]
+            value = TEST_VALUES[current_index]
+            draw_oled(label, value, blink_indicator=True)
+        else:
+            label = LIVE_LABELS[current_index]
+            value = read_latest_value(label, latest_log_file)
+            draw_oled(label, value, blink_indicator=False)
+
+        time.sleep(0.1)
 
 except KeyboardInterrupt:
     GPIO.cleanup()
