@@ -23,13 +23,13 @@ LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT"]
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
-font_small = ImageFont.load_default(15)
+font_small = ImageFont.load_default()
 try:
     font_large = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16
     )
 except:
-    font_large = ImageFont.load_default(30)
+    font_large = ImageFont.load_default()
 
 # ----------------------------
 # CLEAR OLD LOGS ON STARTUP
@@ -105,16 +105,23 @@ def ts_running():
 def draw_oled(label, value, indicator=""):
     global blink
     with canvas(device) as draw:
-        # Vertical centering
+        # Measure label and value sizes
         label_bbox = font_small.getbbox(label)
-        label_height = label_bbox[3] - label_bbox[1]
         value_bbox = font_large.getbbox(value)
+
+        label_width = label_bbox[2] - label_bbox[0]
+        label_height = label_bbox[3] - label_bbox[1]
+
+        value_width = value_bbox[2] - value_bbox[0]
         value_height = value_bbox[3] - value_bbox[1]
+
+        # Total height of both lines
         total_height = label_height + value_height
+
+        # Vertical centering
         y_offset = (OLED_HEIGHT - total_height) / 2
 
-        # Draw label
-        label_width = label_bbox[2] - label_bbox[0]
+        # Draw label horizontally centered
         draw.text(
             ((OLED_WIDTH - label_width) / 2, y_offset),
             label,
@@ -122,8 +129,7 @@ def draw_oled(label, value, indicator=""):
             fill=255
         )
 
-        # Draw value
-        value_width = value_bbox[2] - value_bbox[0]
+        # Draw value below label, horizontally centered
         draw.text(
             ((OLED_WIDTH - value_width) / 2, y_offset + label_height),
             value,
@@ -131,7 +137,7 @@ def draw_oled(label, value, indicator=""):
             fill=255
         )
 
-        # Draw mode indicator (L/T/?) blinking
+        # Draw mode indicator (T/L/?) in top-left, blinking
         if indicator and blink:
             draw.text((0, 0), indicator, font=font_small, fill=255)
 
