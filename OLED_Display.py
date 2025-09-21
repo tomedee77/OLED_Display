@@ -23,13 +23,13 @@ LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT"]
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
-font_small = ImageFont.load_default()
+font_small = ImageFont.load_default(15)
 try:
     font_large = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30
     )
 except:
-    font_large = ImageFont.load_default()
+    font_large = ImageFont.load_default(30)
 
 # ----------------------------
 # CLEAR OLD LOGS ON STARTUP
