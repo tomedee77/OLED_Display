@@ -2,6 +2,7 @@
 import os
 import time
 import glob
+import subprocess
 import RPi.GPIO as GPIO
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
@@ -92,22 +93,47 @@ def read_latest_values():
         return None
 
 
+def ts_running():
+    """Return True if TunerStudio Java process is running."""
+    try:
+        output = subprocess.check_output(["pgrep", "-f", "TunerStudio"], text=True)
+        return bool(output.strip())
+    except subprocess.CalledProcessError:
+        return False
+
+
 def draw_oled(label, value, indicator=""):
+    global blink
     with canvas(device) as draw:
-        # Label top line
-        bbox = font_small.getbbox(label)
-        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(((OLED_WIDTH - w) / 2, 0), label, font=font_small, fill=255)
+        # Vertical centering
+        label_bbox = font_small.getbbox(label)
+        label_height = label_bbox[3] - label_bbox[1]
+        value_bbox = font_large.getbbox(value)
+        value_height = value_bbox[3] - value_bbox[1]
+        total_height = label_height + value_height
+        y_offset = (OLED_HEIGHT - total_height) / 2
 
-        # Value bottom line
-        bbox = font_large.getbbox(value)
-        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(((OLED_WIDTH - w) / 2, 16), value, font=font_large, fill=255)
+        # Draw label
+        label_width = label_bbox[2] - label_bbox[0]
+        draw.text(
+            ((OLED_WIDTH - label_width) / 2, y_offset),
+            label,
+            font=font_small,
+            fill=255
+        )
 
-        # Mode indicator (T or L) with blink
-        if indicator:
-            if blink:
-                draw.text((0, 0), indicator, font=font_small, fill=255)
+        # Draw value
+        value_width = value_bbox[2] - value_bbox[0]
+        draw.text(
+            ((OLED_WIDTH - value_width) / 2, y_offset + label_height),
+            value,
+            font=font_large,
+            fill=255
+        )
+
+        # Draw mode indicator (L/T/?) blinking
+        if indicator and blink:
+            draw.text((0, 0), indicator, font=font_small, fill=255)
 
 
 def get_next_index(limit):
@@ -131,14 +157,14 @@ try:
             elif now - button_held_time > LONG_PRESS:
                 mode_live = not mode_live
                 button_held_time = None
-                time.sleep(0.3)
+                time.sleep(0.3)  # prevent bounce
         else:
             if button_held_time:
                 if now - button_held_time > DEBOUNCE:
                     get_next_index(len(LIVE_LABELS if mode_live else TEST_LABELS))
                 button_held_time = None
 
-        # Toggle blink
+        # Toggle blink every 0.5 sec
         if time.time() - blink_timer > 0.5:
             blink = not blink
             blink_timer = time.time()
@@ -146,13 +172,13 @@ try:
         # Get data depending on mode
         if mode_live:
             values = read_latest_values()
-            if not values:  # fallback
+            if not values:
                 label = "NO LOG"
                 value = "--"
             else:
                 label = LIVE_LABELS[current_index]
                 value = values.get(label, "N/A")
-            indicator = "L"
+            indicator = "L" if ts_running() else "?"
         else:
             label = TEST_LABELS[current_index]
             value = TEST_VALUES[current_index]
