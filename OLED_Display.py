@@ -20,7 +20,7 @@ BUTTON_PIN = 17       # GPIO pin for momentary button
 DEBOUNCE = 0.2        # debounce time
 LONG_PRESS = 2.0      # seconds for long press to enter test mode
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
-GPS_PORT = "/dev/ttyACM0"  # change to your GPS device
+GPS_PORT = "/dev/gps0"  # change to your GPS device
 GPS_BAUD = 9600
 
 # Labels we want to display (must match log columns!)
