@@ -20,7 +20,7 @@ BUTTON_PIN = 17       # GPIO pin for momentary button
 DEBOUNCE = 0.2        # debounce time
 LONG_PRESS = 2.0      # long press to enter/exit test mode
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
-GPS_PORT = "/dev/ttyACM0"
+GPS_PORT = "/dev/gps0"
 GPS_BAUD = 9600
 
 # Labels we want to display (must match log columns!)
@@ -31,10 +31,10 @@ TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
 # Fonts
-font_small = ImageFont.load_default()
+font_small = ImageFont.load_default(15)
 try:
     font_large = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40
     )
 except:
     font_large = ImageFont.load_default()
