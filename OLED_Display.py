@@ -15,7 +15,7 @@ OLED_WIDTH = 128
 OLED_HEIGHT = 32
 BUTTON_PIN = 17  # GPIO pin for momentary button
 DEBOUNCE = 0.2   # button debounce time in seconds
-LINE_SPACING = 5  # vertical pixels between label and value
+LINE_SPACING = 2  # vertical pixels between label and value
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 
 # Labels and test values
@@ -25,7 +25,7 @@ TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 # Fonts
 font_small = ImageFont.load_default(20)
 try:
-    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
+    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
 except:
     font_large = ImageFont.load_default(50)
 
