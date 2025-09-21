@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
+import os
 import time
-import subprocess
+import glob
 import RPi.GPIO as GPIO
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
@@ -12,15 +13,15 @@ from PIL import ImageFont
 # ----------------------------
 OLED_WIDTH = 128
 OLED_HEIGHT = 32
-BUTTON_PIN = 17  # GPIO pin for momentary button
-DEBOUNCE = 0.2   # debounce time in seconds
-LONG_PRESS = 1.5 # seconds to trigger mode switch
+BUTTON_PIN = 17
+DEBOUNCE = 0.2
+LONG_PRESS = 1.5
+DATA_LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 
-# Labels and test values
+LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT"]
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
-# Fonts
 font_small = ImageFont.load_default()
 try:
     font_large = ImageFont.truetype(
@@ -39,66 +40,71 @@ serial = i2c(port=1, address=0x3C)
 device = sh1106(serial)
 
 current_index = 0
-test_mode = True
 last_press_time = 0
-press_start = None
+button_held_time = None
+mode_live = True  # Boot straight into live mode
 blink = True
 blink_timer = time.time()
-mode_message = None
-mode_message_timer = 0
+
 
 # ----------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # ----------------------------
-def get_next_index():
-    global current_index
-    current_index = (current_index + 1) % len(TEST_LABELS)
-    return current_index
+def get_newest_log():
+    """Return newest datalog file path or None."""
+    files = glob.glob(os.path.join(DATA_LOG_DIR, "*.ml*"))
+    if not files:
+        return None
+    return max(files, key=os.path.getmtime)
 
-def draw_centered(draw, text, font, y):
-    bbox = font.getbbox(text)
-    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (OLED_WIDTH - w) // 2
-    draw.text((x, y), text, font=font, fill=255)
-    return h
 
-def check_tunerstudio():
+def read_latest_values():
+    """Read last line of newest datalog and return dict of values."""
+    logfile = get_newest_log()
+    if not logfile:
+        return None
+
     try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "tunerstudio.service"],
-            capture_output=True, text=True
-        )
-        return result.stdout.strip() == "active"
+        with open(logfile, "r") as f:
+            lines = f.readlines()
+            if len(lines) < 2:
+                return None
+            header = lines[0].strip().split("\t")
+            last = lines[-1].strip().split("\t")
+            data = dict(zip(header, last))
+            return {
+                "MAP": data.get("MAP", "N/A"),
+                "AFR": data.get("AFR", "N/A"),
+                "CLT": data.get("CLT", "N/A"),
+                "MAT": data.get("MAT", "N/A"),
+            }
     except Exception:
-        return False
+        return None
 
-def draw_oled(label, value, blink_indicator=False, ts_running=False, mode_msg=None):
-    global device, blink
+
+def draw_oled(label, value, indicator=""):
     with canvas(device) as draw:
-        if mode_msg:  # temporary mode message
-            draw_centered(draw, mode_msg, font_large, (OLED_HEIGHT - 16) // 2)
-            return
+        # Label top line
+        bbox = font_small.getbbox(label)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(((OLED_WIDTH - w) / 2, 0), label, font=font_small, fill=255)
 
-        # Label (top, centered)
-        label_height = draw_centered(draw, label, font_small, 0)
-
-        # Value (centered below label)
+        # Value bottom line
         bbox = font_large.getbbox(value)
         w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = (OLED_WIDTH - w) // 2
-        y = (OLED_HEIGHT - h) // 2 + (label_height // 2)
-        draw.text((x, y), value, font=font_large, fill=255)
+        draw.text(((OLED_WIDTH - w) / 2, 16), value, font=font_large, fill=255)
 
-        # Optional blink indicator
-        if blink_indicator and blink:
-            draw.text((0, 0), "T", font=font_small, fill=255)
+        # Mode indicator (T or L) with blink
+        if indicator:
+            if blink:
+                draw.text((0, 0), indicator, font=font_small, fill=255)
 
-        # TunerStudio running indicator
-        if ts_running:
-            ts_text = "TS"
-            bbox = font_small.getbbox(ts_text)
-            w = bbox[2] - bbox[0]
-            draw.text((OLED_WIDTH - w, 0), ts_text, font=font_small, fill=255)
+
+def get_next_index(limit):
+    global current_index
+    current_index = (current_index + 1) % limit
+    return current_index
+
 
 # ----------------------------
 # MAIN LOOP
@@ -106,41 +112,43 @@ def draw_oled(label, value, blink_indicator=False, ts_running=False, mode_msg=No
 try:
     while True:
         now = time.time()
+        pressed = GPIO.input(BUTTON_PIN) == 0
 
-        # Button logic
-        if GPIO.input(BUTTON_PIN) == 0:  # button pressed
-            if press_start is None:
-                press_start = now
-            elif now - press_start >= LONG_PRESS:
-                test_mode = not test_mode
-                mode_message = "MODE: TEST" if test_mode else "MODE: LIVE"
-                mode_message_timer = now
-                press_start = None
-        else:  # button released
-            if press_start is not None:
-                if now - press_start < LONG_PRESS and now - last_press_time > DEBOUNCE:
-                    get_next_index()  # short press
-                    last_press_time = now
-                press_start = None
+        # Handle button press
+        if pressed:
+            if button_held_time is None:
+                button_held_time = now
+            elif now - button_held_time > LONG_PRESS:
+                mode_live = not mode_live
+                button_held_time = None
+                time.sleep(0.3)
+        else:
+            if button_held_time:
+                if now - button_held_time > DEBOUNCE:
+                    get_next_index(len(LIVE_LABELS if mode_live else TEST_LABELS))
+                button_held_time = None
 
-        # Blink toggle
-        if now - blink_timer > 0.5:
+        # Toggle blink
+        if time.time() - blink_timer > 0.5:
             blink = not blink
-            blink_timer = now
+            blink_timer = time.time()
 
-        # Check TunerStudio status every loop
-        ts_running = check_tunerstudio()
+        # Get data depending on mode
+        if mode_live:
+            values = read_latest_values()
+            if not values:  # fallback
+                label = "NO LOG"
+                value = "--"
+            else:
+                label = LIVE_LABELS[current_index]
+                value = values.get(label, "N/A")
+            indicator = "L"
+        else:
+            label = TEST_LABELS[current_index]
+            value = TEST_VALUES[current_index]
+            indicator = "T"
 
-        # If showing mode message, clear after 1s
-        if mode_message and now - mode_message_timer > 1.0:
-            mode_message = None
-
-        # Display
-        label = TEST_LABELS[current_index]
-        value = TEST_VALUES[current_index]
-        draw_oled(label, value, blink_indicator=test_mode,
-                  ts_running=ts_running, mode_msg=mode_message)
-
+        draw_oled(label, str(value), indicator)
         time.sleep(0.05)
 
 except KeyboardInterrupt:
