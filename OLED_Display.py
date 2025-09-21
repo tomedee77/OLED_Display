@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-import os
 import time
+import os
 import glob
-import subprocess
 import RPi.GPIO as GPIO
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
@@ -14,32 +13,21 @@ from PIL import ImageFont
 # ----------------------------
 OLED_WIDTH = 128
 OLED_HEIGHT = 32
-BUTTON_PIN = 17
-DEBOUNCE = 0.2
-LONG_PRESS = 1.5
-DATA_LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
+BUTTON_PIN = 17  # GPIO pin for momentary button
+DEBOUNCE = 0.2   # button debounce time in seconds
+LINE_SPACING = 2  # vertical pixels between label and value
+LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 
-LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT"]
+# Labels and test values
 TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT"]
 TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C"]
 
-font_small = ImageFont.load_default(15)
+# Fonts
+font_small = ImageFont.load_default(20)
 try:
-    font_large = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 35
-    )
+    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 35)
 except:
     font_large = ImageFont.load_default(35)
-
-# ----------------------------
-# CLEAR OLD LOGS ON STARTUP
-# ----------------------------
-for f in glob.glob(os.path.join(DATA_LOG_DIR, "*.ml*")):
-    try:
-        os.remove(f)
-        print(f"Deleted old log: {f}")
-    except Exception as e:
-        print(f"Failed to delete {f}: {e}")
 
 # ----------------------------
 # SETUP
@@ -51,56 +39,38 @@ serial = i2c(port=1, address=0x3C)
 device = sh1106(serial)
 
 current_index = 0
+test_mode = True
 last_press_time = 0
-button_held_time = None
-mode_live = True  # Boot straight into live mode
 blink = True
 blink_timer = time.time()
 
+# ----------------------------
+# LOG FILE HANDLING
+# ----------------------------
+def clear_old_logs():
+    files = glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg"))
+    for f in files:
+        try:
+            os.remove(f)
+        except:
+            pass
+
+clear_old_logs()  # clear old logs at startup
+
+# Get the latest log file for live monitoring
+def get_latest_log_file():
+    files = sorted(glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg")), key=os.path.getmtime, reverse=True)
+    return files[0] if files else None
 
 # ----------------------------
-# HELPERS
+# HELPER FUNCTIONS
 # ----------------------------
-def get_newest_log():
-    """Return newest datalog file path or None."""
-    files = glob.glob(os.path.join(DATA_LOG_DIR, "*.ml*"))
-    if not files:
-        return None
-    return max(files, key=os.path.getmtime)
-
-
-def read_latest_values():
-    """Read last line of newest datalog and return dict of values."""
-    logfile = get_newest_log()
-    if not logfile:
-        return None
-
-    try:
-        with open(logfile, "r") as f:
-            lines = f.readlines()
-            if len(lines) < 2:
-                return None
-            header = lines[0].strip().split("\t")
-            last = lines[-1].strip().split("\t")
-            data = dict(zip(header, last))
-            return {
-                "MAP": data.get("MAP", "N/A"),
-                "AFR": data.get("AFR", "N/A"),
-                "CLT": data.get("CLT", "N/A"),
-                "MAT": data.get("MAT", "N/A"),
-            }
-    except Exception:
-        return None
-
-
-def ts_running():
-    """Return True if TunerStudio Java process is running."""
-    try:
-        output = subprocess.check_output(["pgrep", "-f", "TunerStudio"], text=True)
-        return bool(output.strip())
-    except subprocess.CalledProcessError:
-        return False
-
+def get_next_index():
+    global current_index
+    current_index += 1
+    if current_index >= len(TEST_LABELS):
+        current_index = 0
+    return current_index
 
 def draw_oled(label, value, indicator=""):
     global blink
@@ -115,13 +85,10 @@ def draw_oled(label, value, indicator=""):
         value_width = value_bbox[2] - value_bbox[0]
         value_height = value_bbox[3] - value_bbox[1]
 
-        # Total height of both lines
-        total_height = label_height + value_height
-
-        # Vertical centering
+        total_height = label_height + LINE_SPACING + value_height
         y_offset = (OLED_HEIGHT - total_height) / 2
 
-        # Draw label horizontally centered
+        # Draw label
         draw.text(
             ((OLED_WIDTH - label_width) / 2, y_offset),
             label,
@@ -129,68 +96,58 @@ def draw_oled(label, value, indicator=""):
             fill=255
         )
 
-        # Draw value below label, horizontally centered
+        # Draw value
         draw.text(
-            ((OLED_WIDTH - value_width) / 2, y_offset + label_height),
+            ((OLED_WIDTH - value_width) / 2, y_offset + label_height + LINE_SPACING),
             value,
             font=font_large,
             fill=255
         )
 
-        # Draw mode indicator (T/L/?) in top-left, blinking
+        # Optional blink indicator (e.g., "T" for test mode)
         if indicator and blink:
             draw.text((0, 0), indicator, font=font_small, fill=255)
 
-
-def get_next_index(limit):
-    global current_index
-    current_index = (current_index + 1) % limit
-    return current_index
-
+def is_tunerstudio_running():
+    # simple check: if latest log file exists and is being updated
+    latest = get_latest_log_file()
+    if latest:
+        try:
+            mtime = os.path.getmtime(latest)
+            if time.time() - mtime < 5:  # updated within last 5 seconds
+                return True
+        except:
+            return False
+    return False
 
 # ----------------------------
 # MAIN LOOP
 # ----------------------------
 try:
     while True:
-        now = time.time()
-        pressed = GPIO.input(BUTTON_PIN) == 0
-
-        # Handle button press
-        if pressed:
-            if button_held_time is None:
-                button_held_time = now
-            elif now - button_held_time > LONG_PRESS:
-                mode_live = not mode_live
-                button_held_time = None
-                time.sleep(0.3)  # prevent bounce
-        else:
-            if button_held_time:
-                if now - button_held_time > DEBOUNCE:
-                    get_next_index(len(LIVE_LABELS if mode_live else TEST_LABELS))
-                button_held_time = None
+        # Button polling
+        if GPIO.input(BUTTON_PIN) == 0:  # pressed
+            now = time.time()
+            if now - last_press_time > DEBOUNCE:
+                get_next_index()
+                last_press_time = now
 
         # Toggle blink every 0.5 sec
         if time.time() - blink_timer > 0.5:
             blink = not blink
             blink_timer = time.time()
 
-        # Get data depending on mode
-        if mode_live:
-            values = read_latest_values()
-            if not values:
-                label = "NO LOG"
-                value = "--"
-            else:
-                label = LIVE_LABELS[current_index]
-                value = values.get(label, "N/A")
-            indicator = "L" if ts_running() else "?"
-        else:
-            label = TEST_LABELS[current_index]
-            value = TEST_VALUES[current_index]
-            indicator = "T"
+        # Determine what to display
+        label = TEST_LABELS[current_index]
+        value = TEST_VALUES[current_index]
 
-        draw_oled(label, str(value), indicator)
+        # If not in test mode, show TS status instead
+        if not test_mode:
+            ts_status = "TS OK" if is_tunerstudio_running() else "TS --"
+            draw_oled(ts_status, "", indicator="")
+        else:
+            draw_oled(label, value, indicator="T")
+
         time.sleep(0.05)
 
 except KeyboardInterrupt:
