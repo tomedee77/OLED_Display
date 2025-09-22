@@ -65,7 +65,6 @@ gps_fix = False
 # HELPER FUNCTIONS
 # ----------------------------
 def cleanup_old_logs():
-    """Delete logs older than today"""
     today = datetime.now().date()
     for f in glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg")):
         try:
