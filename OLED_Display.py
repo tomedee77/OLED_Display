@@ -18,15 +18,16 @@ OLED_WIDTH = 128
 OLED_HEIGHT = 32
 BUTTON_PIN = 17       # GPIO pin for momentary button
 DEBOUNCE = 0.2        # debounce time
-LONG_PRESS = 2        # seconds to return to GPS display
+LONG_PRESS = 2        # seconds to return to GPS
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 GPS_PORT = "/dev/gps0"
 GPS_BAUD = 9600
 
+# Labels for live mode (ECU + GPS)
 LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT", "GPS"]
 
 # Fonts
-font_small = ImageFont.load_default()
+font_small = ImageFont.load_default(15)
 try:
     font_large = ImageFont.truetype(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40
@@ -43,14 +44,14 @@ GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 serial_oled = i2c(port=1, address=0x3C)
 device = sh1106(serial_oled)
 
-current_index = 0
-showing_gps = True
 button_down_time = None
 last_press_time = 0
 blink = True
 blink_timer = time.time()
 latest_log_file = None
-gps_fix = False
+
+# Start on GPS in live mode
+current_index = LIVE_LABELS.index("GPS")
 
 # Setup GPS
 try:
@@ -58,8 +59,8 @@ try:
 except Exception:
     gps_serial = None
 
-# Track file pointer for tailing
-log_fp = None
+# Track GPS fix
+gps_fix = False
 
 # ----------------------------
 # HELPER FUNCTIONS
@@ -80,25 +81,56 @@ def find_latest_log():
         return None
     return max(files, key=os.path.getmtime)
 
+def get_next_index(labels):
+    global current_index
+    current_index = (current_index + 1) % len(labels)
+    return current_index
+
 def draw_oled(label, value, gps_fix=False):
-    global device, blink
+    global device
     with canvas(device) as draw:
         if label == "GPS":
+            # GPS big + centered
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, (OLED_HEIGHT - h)/2), value, font=font_large, fill=255)
+
+            # GPS fix dot (top-left corner)
+            if gps_fix:
+                draw.text((0, 0), "•", font=font_small, fill=255)
+
         else:
-            # Label top
+            # Label (top)
             bbox = font_small.getbbox(label)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 0), label, font=font_small, fill=255)
-            # Value bottom
+
+            # Value (bottom)
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 16), value, font=font_large, fill=255)
-        # GPS fix dot
-        if gps_fix and label == "GPS":
-            draw.text((0,0), "•", font=font_small, fill=255)
+
+def read_latest_value(label, file_path):
+    try:
+        with open(file_path, "r") as f:
+            lines = [line.strip() for line in f if line.strip()]  # keep only non-empty lines
+            if len(lines) < 2:
+                return "N/A"
+
+            header = lines[0].split("\t")
+            if label not in header:
+                return "N/A"
+
+            idx = header.index(label)
+            last = lines[-1].split("\t")
+
+            if idx >= len(last):
+                return "N/A"
+
+            return last[idx]
+    except Exception as e:
+        print(f"Log read error: {e}")
+        return "N/A"
 
 def read_gps_speed():
     global gps_fix
@@ -119,29 +151,6 @@ def read_gps_speed():
         gps_fix = False
     return "0.0"
 
-def read_latest_value(label):
-    """Return the last value for label by tailing the log"""
-    global log_fp
-    if not log_fp:
-        return "N/A"
-    while True:
-        pos = log_fp.tell()
-        line = log_fp.readline()
-        if not line:
-            log_fp.seek(pos)
-            break
-        # Skip empty or metadata lines
-        if line.strip() and not line.startswith("MS2Extra") and not line.startswith("Capture Date") and not line.startswith("Time"):
-            parts = line.strip().split()
-            if label in LIVE_LABELS:
-                try:
-                    idx = LIVE_LABELS.index(label)
-                    if idx < len(parts):
-                        return parts[idx]
-                except:
-                    return "N/A"
-    return "N/A"
-
 # ----------------------------
 # MAIN
 # ----------------------------
@@ -154,55 +163,37 @@ try:
             blink = not blink
             blink_timer = time.time()
 
-        # Button polling
+        # Button handling
         button_state = GPIO.input(BUTTON_PIN)
         now = time.time()
-        if button_state == 0:  # pressed
+        if button_state == 0:
             if button_down_time is None:
                 button_down_time = now
             elif now - button_down_time >= LONG_PRESS:
-                showing_gps = True  # long press returns to GPS
-        else:  # released
-            if button_down_time is not None:
-                press_duration = now - button_down_time
-                if press_duration < LONG_PRESS and now - last_press_time > DEBOUNCE:
-                    if showing_gps:
-                        showing_gps = False
-                        current_index = 0
-                    else:
-                        current_index = (current_index + 1) % (len(LIVE_LABELS)-1)  # exclude GPS from cycling
-                last_press_time = now
+                # Long press → go back to GPS
+                current_index = LIVE_LABELS.index("GPS")
+                button_down_time = None
+        else:
+            if button_down_time:
+                if now - last_press_time > DEBOUNCE and now - button_down_time < LONG_PRESS:
+                    get_next_index(LIVE_LABELS)
+                    last_press_time = now
                 button_down_time = None
 
-        # Open latest log for tailing if needed
-        if not showing_gps:
-            candidate = find_latest_log()
-            if candidate != latest_log_file:
-                latest_log_file = candidate
-                try:
-                    if log_fp:
-                        log_fp.close()
-                    log_fp = open(latest_log_file, "r")
-                    # Skip to last line
-                    log_fp.seek(0, os.SEEK_END)
-                except Exception:
-                    log_fp = None
+        # Log check
+        candidate = find_latest_log()
+        if candidate and candidate != latest_log_file:
+            latest_log_file = candidate
 
-        # Determine what to display
-        if showing_gps:
-            label = "GPS"
+        # Pick label + value
+        label = LIVE_LABELS[current_index]
+        if label == "GPS":
             value = read_gps_speed()
         else:
-            label = LIVE_LABELS[current_index]
-            if label == "GPS":
-                value = read_gps_speed()
-            else:
-                value = read_latest_value(label)
+            value = read_latest_value(label, latest_log_file)
 
         draw_oled(label, value, gps_fix=gps_fix)
         time.sleep(0.1)
 
 except KeyboardInterrupt:
     GPIO.cleanup()
-    if log_fp:
-        log_fp.close()
