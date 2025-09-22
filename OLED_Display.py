@@ -17,21 +17,16 @@ import pynmea2
 OLED_WIDTH = 128
 OLED_HEIGHT = 32
 BUTTON_PIN = 17       # GPIO pin for momentary button
-DEBOUNCE = 0.2        # debounce time
-LONG_PRESS = 2        # seconds to enter test mode
+DEBOUNCE = 0.2        # seconds
+LONG_PRESS = 2        # seconds to return to GPS view
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 GPS_PORT = "/dev/gps0"
 GPS_BAUD = 9600
 
-# Labels for live mode (ECU + GPS)
-LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT", "GPS"]
-
-# Labels/values for test mode
-TEST_LABELS = ["RPM", "TPS", "AFR", "Coolant", "IAT", "GPS"]
-TEST_VALUES = ["1000", "12.5%", "14.7", "90°C", "25°C", "0.0"]
+LOG_LABELS = ["MAP", "AFR", "CLT", "MAT"]
 
 # Fonts
-font_small = ImageFont.load_default(15)
+font_small = ImageFont.load_default()
 try:
     font_large = ImageFont.truetype(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40
@@ -48,24 +43,20 @@ GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 serial_oled = i2c(port=1, address=0x3C)
 device = sh1106(serial_oled)
 
-test_mode = False
+current_index = 0
+showing_gps = True
 button_down_time = None
 last_press_time = 0
 blink = True
 blink_timer = time.time()
 latest_log_file = None
-
-# Start on GPS in live mode
-current_index = LIVE_LABELS.index("GPS")
+gps_fix = False
 
 # Setup GPS
 try:
     gps_serial = serial.Serial(GPS_PORT, GPS_BAUD, timeout=1)
 except Exception:
     gps_serial = None
-
-# Track GPS fix
-gps_fix = False
 
 # ----------------------------
 # HELPER FUNCTIONS
@@ -86,38 +77,30 @@ def find_latest_log():
         return None
     return max(files, key=os.path.getmtime)
 
-def get_next_index(labels):
+def get_next_index():
     global current_index
-    current_index = (current_index + 1) % len(labels)
+    current_index = (current_index + 1) % len(LOG_LABELS)
     return current_index
 
-def draw_oled(label, value, blink_indicator=False, gps_fix=False):
-    global device, blink
+def draw_oled(label, value, gps=False, gps_fix=False, blink=False):
     with canvas(device) as draw:
-        if label == "GPS":
-            # GPS big + centered
+        if gps:
+            # Value centered
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, (OLED_HEIGHT - h)/2), value, font=font_large, fill=255)
-
-            # GPS fix dot (top-left corner)
-            if gps_fix:
-                draw.text((0, 0), "•", font=font_small, fill=255)
-
         else:
-            # Label (top)
+            # Label top
             bbox = font_small.getbbox(label)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 0), label, font=font_small, fill=255)
-
-            # Value (bottom)
+            # Value bottom
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 16), value, font=font_large, fill=255)
-
-        # Blinking "T" in test mode
-        if blink_indicator and blink:
-            draw.text((OLED_WIDTH-10, 0), "T", font=font_small, fill=255)
+        # GPS fix dot top-left, blinking
+        if gps_fix and blink:
+            draw.text((0, 0), "•", font=font_small, fill=255)
 
 def read_latest_value(label, file_path):
     try:
@@ -160,42 +143,48 @@ cleanup_old_logs()
 
 try:
     while True:
-        # Blink toggle
+        # Blink toggle for GPS fix dot
         if time.time() - blink_timer > 0.5:
             blink = not blink
             blink_timer = time.time()
 
-        # Button handling
+        # Button polling
         button_state = GPIO.input(BUTTON_PIN)
         now = time.time()
         if button_state == 0:
             if button_down_time is None:
                 button_down_time = now
-            elif now - button_down_time >= LONG_PRESS:
-                test_mode = True
+            elif not showing_gps and now - button_down_time >= LONG_PRESS:
+                # Long press: return to GPS
+                showing_gps = True
         else:
             if button_down_time:
+                # Short press
                 if now - last_press_time > DEBOUNCE and now - button_down_time < LONG_PRESS:
-                    get_next_index(TEST_LABELS if test_mode else LIVE_LABELS)
-                    last_press_time = now
+                    if showing_gps:
+                        # Short press while GPS showing: switch to first log label
+                        showing_gps = False
+                        current_index = 0
+                    else:
+                        get_next_index()
+                last_press_time = now
                 button_down_time = None
 
-        # Log check
-        if not test_mode:
+        # Update log file if showing log
+        if not showing_gps:
             candidate = find_latest_log()
             if candidate and candidate != latest_log_file:
                 latest_log_file = candidate
 
-        # Pick label + value
-        label = TEST_LABELS[current_index] if test_mode else LIVE_LABELS[current_index]
-        if label == "GPS":
+        # Display values
+        if showing_gps:
             value = read_gps_speed()
-        elif test_mode:
-            value = TEST_VALUES[current_index]
+            draw_oled("GPS", value, gps=True, gps_fix=gps_fix, blink=blink)
         else:
+            label = LOG_LABELS[current_index]
             value = read_latest_value(label, latest_log_file)
+            draw_oled(label, value, gps_fix=gps_fix, blink=blink)
 
-        draw_oled(label, value, blink_indicator=test_mode, gps_fix=gps_fix)
         time.sleep(0.1)
 
 except KeyboardInterrupt:
