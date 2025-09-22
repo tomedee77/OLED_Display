@@ -25,7 +25,7 @@ GPS_BAUD = 9600
 
 LIVE_LABELS = ["GPS", "MAP", "AFR", "MAT", "CLT"]
 
-font_small = ImageFont.load_default()
+font_small = ImageFont.load_default(12)
 try:
     font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
 except:
