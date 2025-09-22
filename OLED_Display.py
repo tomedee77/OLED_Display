@@ -48,7 +48,7 @@ GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 serial_oled = i2c(port=1, address=0x3C)
 device = sh1106(serial_oled)
 
-current_index = 0
+current_index = LIVE_LABELS.index("GPS")
 test_mode = False
 button_down_time = None
 last_press_time = 0
