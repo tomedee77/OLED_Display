@@ -24,10 +24,10 @@ GPS_PORT = "/dev/gps0"
 GPS_BAUD = 9600
 
 # Labels for live mode (ECU + GPS)
-LIVE_LABELS = ["MAP", "AFR", "CLT", "MAT", "GPS"]
+LIVE_LABELS = ["GPS", "MAP", "AFR", "CLT", "MAT"]
 
 # Fonts
-font_small = ImageFont.load_default(15)
+font_small = ImageFont.load_default()
 try:
     font_large = ImageFont.truetype(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40
@@ -50,8 +50,8 @@ blink = True
 blink_timer = time.time()
 latest_log_file = None
 
-# Start on GPS in live mode
-current_index = LIVE_LABELS.index("GPS")
+# Start on GPS
+current_index = 0
 
 # Setup GPS
 try:
@@ -59,13 +59,13 @@ try:
 except Exception:
     gps_serial = None
 
-# Track GPS fix
 gps_fix = False
 
 # ----------------------------
 # HELPER FUNCTIONS
 # ----------------------------
 def cleanup_old_logs():
+    """Delete logs older than today"""
     today = datetime.now().date()
     for f in glob.glob(os.path.join(LOG_DIR, "*.msl")) + glob.glob(os.path.join(LOG_DIR, "*.mlg")):
         try:
@@ -81,55 +81,67 @@ def find_latest_log():
         return None
     return max(files, key=os.path.getmtime)
 
-def get_next_index(labels):
+def get_next_index():
     global current_index
-    current_index = (current_index + 1) % len(labels)
+    current_index = (current_index + 1) % len(LIVE_LABELS)
     return current_index
 
 def draw_oled(label, value, gps_fix=False):
-    global device
+    global device, blink
     with canvas(device) as draw:
         if label == "GPS":
-            # GPS big + centered
+            # GPS value only, centered
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, (OLED_HEIGHT - h)/2), value, font=font_large, fill=255)
 
-            # GPS fix dot (top-left corner)
-            if gps_fix:
+            # GPS fix dot top-left
+            if gps_fix and blink:
                 draw.text((0, 0), "•", font=font_small, fill=255)
-
         else:
-            # Label (top)
+            # Label top
             bbox = font_small.getbbox(label)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 0), label, font=font_small, fill=255)
 
-            # Value (bottom)
+            # Value bottom
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 16), value, font=font_large, fill=255)
 
 def read_latest_value(label, file_path):
+    """Tail the log file, skip metadata lines, return latest numeric value"""
     try:
+        if not file_path or not os.path.exists(file_path):
+            return "N/A"
+
         with open(file_path, "r") as f:
-            lines = [line.strip() for line in f if line.strip()]  # keep only non-empty lines
-            if len(lines) < 2:
-                return "N/A"
+            lines = f.readlines()
 
-            header = lines[0].split("\t")
-            if label not in header:
-                return "N/A"
+        if len(lines) < 3:
+            return "N/A"
 
-            idx = header.index(label)
-            last = lines[-1].split("\t")
+        # First line = headers
+        header = lines[0].strip().split("\t")
+        if label not in header:
+            return "N/A"
+        idx = header.index(label)
 
-            if idx >= len(last):
-                return "N/A"
+        # Walk backwards to find the latest valid numeric row
+        for line in reversed(lines):
+            parts = line.strip().split("\t")
+            if len(parts) <= idx:
+                continue
+            try:
+                float(parts[0])  # first column numeric check
+            except ValueError:
+                continue
+            return parts[idx]
 
-            return last[idx]
+        return "N/A"
+
     except Exception as e:
-        print(f"Log read error: {e}")
+        print(f"Error reading {file_path}: {e}")
         return "N/A"
 
 def read_gps_speed():
@@ -152,7 +164,7 @@ def read_gps_speed():
     return "0.0"
 
 # ----------------------------
-# MAIN
+# MAIN LOOP
 # ----------------------------
 cleanup_old_logs()
 
@@ -163,29 +175,33 @@ try:
             blink = not blink
             blink_timer = time.time()
 
-        # Button handling
+        # Button polling
         button_state = GPIO.input(BUTTON_PIN)
         now = time.time()
         if button_state == 0:
             if button_down_time is None:
                 button_down_time = now
             elif now - button_down_time >= LONG_PRESS:
-                # Long press → go back to GPS
-                current_index = LIVE_LABELS.index("GPS")
-                button_down_time = None
+                # Return to GPS
+                current_index = 0
         else:
             if button_down_time:
                 if now - last_press_time > DEBOUNCE and now - button_down_time < LONG_PRESS:
-                    get_next_index(LIVE_LABELS)
+                    # Short press -> next log value (skip GPS)
+                    if current_index == 0:
+                        current_index = 1
+                    else:
+                        get_next_index()
                     last_press_time = now
                 button_down_time = None
 
-        # Log check
-        candidate = find_latest_log()
-        if candidate and candidate != latest_log_file:
-            latest_log_file = candidate
+        # Update latest log file
+        if current_index != 0:  # only read log if not GPS
+            candidate = find_latest_log()
+            if candidate and candidate != latest_log_file:
+                latest_log_file = candidate
 
-        # Pick label + value
+        # Pick value
         label = LIVE_LABELS[current_index]
         if label == "GPS":
             value = read_gps_speed()
@@ -193,6 +209,7 @@ try:
             value = read_latest_value(label, latest_log_file)
 
         draw_oled(label, value, gps_fix=gps_fix)
+
         time.sleep(0.1)
 
 except KeyboardInterrupt:
