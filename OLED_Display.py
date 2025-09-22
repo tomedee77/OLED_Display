@@ -16,17 +16,16 @@ import pynmea2
 # ----------------------------
 OLED_WIDTH = 128
 OLED_HEIGHT = 32
-BUTTON_PIN = 17       # GPIO pin for momentary button
-DEBOUNCE = 0.2        # seconds
-LONG_PRESS = 2        # seconds to return to GPS view
+BUTTON_PIN = 17
+DEBOUNCE = 0.2
+LONG_PRESS = 2
 LOG_DIR = "/home/tomedee77/TunerStudioProjects/VWRX/DataLogs"
 GPS_PORT = "/dev/gps0"
 GPS_BAUD = 9600
 
-LOG_LABELS = ["MAP", "AFR", "CLT", "MAT"]
+LIVE_LABELS = ["GPS", "MAP", "AFR", "CLT", "MAT"]
 
-# Fonts
-font_small = ImageFont.load_default()
+font_small = ImageFont.load_default(20)
 try:
     font_large = ImageFont.truetype(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40
@@ -44,15 +43,16 @@ serial_oled = i2c(port=1, address=0x3C)
 device = sh1106(serial_oled)
 
 current_index = 0
-showing_gps = True
 button_down_time = None
 last_press_time = 0
 blink = True
 blink_timer = time.time()
 latest_log_file = None
+log_file_handle = None
+log_positions = {}
 gps_fix = False
 
-# Setup GPS
+# GPS setup
 try:
     gps_serial = serial.Serial(GPS_PORT, GPS_BAUD, timeout=1)
 except Exception:
@@ -79,43 +79,26 @@ def find_latest_log():
 
 def get_next_index():
     global current_index
-    current_index = (current_index + 1) % len(LOG_LABELS)
+    current_index = (current_index + 1) % len(LIVE_LABELS)
     return current_index
 
-def draw_oled(label, value, gps=False, gps_fix=False, blink=False):
+def draw_oled(label, value):
+    global device, blink
     with canvas(device) as draw:
-        if gps:
-            # Value centered
+        if label == "GPS":
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, (OLED_HEIGHT - h)/2), value, font=font_large, fill=255)
+            if gps_fix:
+                draw.text((0, 0), "•", font=font_small, fill=255)
         else:
-            # Label top
             bbox = font_small.getbbox(label)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 0), label, font=font_small, fill=255)
-            # Value bottom
+
             bbox = font_large.getbbox(value)
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(((OLED_WIDTH - w)/2, 16), value, font=font_large, fill=255)
-        # GPS fix dot top-left, blinking
-        if gps_fix and blink:
-            draw.text((0, 0), "•", font=font_small, fill=255)
-
-def read_latest_value(label, file_path):
-    try:
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-            if len(lines) < 2:
-                return "N/A"
-            header = lines[0].strip().split("\t")
-            if label not in header:
-                return "N/A"
-            idx = header.index(label)
-            last = lines[-1].strip().split("\t")
-            return last[idx]
-    except Exception:
-        return "N/A"
 
 def read_gps_speed():
     global gps_fix
@@ -136,14 +119,54 @@ def read_gps_speed():
         gps_fix = False
     return "0.0"
 
+def tail_log(label):
+    """Return latest value for a label using file tailing"""
+    global log_file_handle, log_positions
+
+    if not latest_log_file:
+        return "N/A"
+
+    try:
+        # open log if not already
+        if not log_file_handle or log_file_handle.name != latest_log_file:
+            if log_file_handle:
+                log_file_handle.close()
+            log_file_handle = open(latest_log_file, "r")
+            log_positions.clear()
+            # read header to locate columns
+            lines = [line.strip() for line in log_file_handle if line.strip()]
+            header_idx = None
+            for i, line in enumerate(lines):
+                parts = line.split("\t")
+                if label in parts:
+                    header_idx = i
+                    log_positions['col'] = parts.index(label)
+                    log_positions['pos'] = i + 1  # start after header
+                    break
+            if header_idx is None:
+                return "N/A"
+        # seek to last read line
+        log_file_handle.seek(0)
+        lines = [line.strip() for line in log_file_handle if line.strip()]
+        if len(lines) <= log_positions['pos']:
+            return "N/A"
+        last_data_line = lines[-1]
+        parts = last_data_line.split("\t")
+        col = log_positions.get('col', 0)
+        if len(parts) > col:
+            return parts[col]
+        return "N/A"
+    except Exception:
+        return "N/A"
+
 # ----------------------------
-# MAIN
+# MAIN LOOP
 # ----------------------------
 cleanup_old_logs()
 
 try:
     while True:
-        # Blink toggle for GPS fix dot
+        # Blink
         if time.time() - blink_timer > 0.5:
             blink = not blink
             blink_timer = time.time()
@@ -154,38 +177,34 @@ try:
         if button_state == 0:
             if button_down_time is None:
                 button_down_time = now
-            elif not showing_gps and now - button_down_time >= LONG_PRESS:
-                # Long press: return to GPS
-                showing_gps = True
+            elif now - button_down_time >= LONG_PRESS:
+                current_index = 0  # return to GPS
         else:
             if button_down_time:
-                # Short press
                 if now - last_press_time > DEBOUNCE and now - button_down_time < LONG_PRESS:
-                    if showing_gps:
-                        # Short press while GPS showing: switch to first log label
-                        showing_gps = False
-                        current_index = 0
-                    else:
-                        get_next_index()
-                last_press_time = now
+                    get_next_index()
+                    last_press_time = now
                 button_down_time = None
 
-        # Update log file if showing log
-        if not showing_gps:
-            candidate = find_latest_log()
-            if candidate and candidate != latest_log_file:
-                latest_log_file = candidate
+        # Update latest log
+        candidate = find_latest_log()
+        if candidate and candidate != latest_log_file:
+            latest_log_file = candidate
+            if log_file_handle:
+                log_file_handle.close()
+                log_file_handle = None
 
-        # Display values
-        if showing_gps:
+        # Determine display value
+        label = LIVE_LABELS[current_index]
+        if label == "GPS":
             value = read_gps_speed()
-            draw_oled("GPS", value, gps=True, gps_fix=gps_fix, blink=blink)
         else:
-            label = LOG_LABELS[current_index]
-            value = read_latest_value(label, latest_log_file)
-            draw_oled(label, value, gps_fix=gps_fix, blink=blink)
+            value = tail_log(label)
 
+        draw_oled(label, value)
         time.sleep(0.1)
 
 except KeyboardInterrupt:
+    if log_file_handle:
+        log_file_handle.close()
     GPIO.cleanup()
